@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 REPO = "Siniv26/agent-hub"
 AUTHOR = "Siniv26"
 READY_LABEL = "bus:ready"

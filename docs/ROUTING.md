@@ -112,7 +112,7 @@ Template: [../.github/ISSUE_TEMPLATE/task.md](../.github/ISSUE_TEMPLATE/task.md)
 
 ## Worker / 工人
 
-v1.1 is default off and lives under `%LOCALAPPDATA%\AgentHub\worker`. It claims one opted-in Issue from author `Siniv26` with `bus:ready` and `status:todo`. Comments are ignored. The claim snapshot is immutable. A child that already started is not started again. A failed GitHub write is not retried. A timeout kills the child.
+v1.1.1 is default off and lives under `%LOCALAPPDATA%\AgentHub\worker`. It claims one opted-in Issue from author `Siniv26` with `bus:ready` and `status:todo`. Comments are ignored. The claim snapshot is immutable. A child that already started is not started again. A failed GitHub write is not retried. A timeout kills the child.
 
 Smoke (`type:smoke`, `agent:partner`, risk `none`) stays the default automatic task and closes only after `BUS_SMOKE_OK`.
 

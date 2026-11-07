@@ -65,12 +65,19 @@ def run_process(
     if not argv or any(not isinstance(part, str) for part in argv):
         raise ValueError("argv must be a list of strings")
     flags: dict[str, object] = {}
+    popen_args: list[str] | str = argv
     if os.name == "nt":
         flags["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        # Imported here so lanes can import run_process at module load.
+        from worker.lanes import windows_launch_command
+
+        command = windows_launch_command(argv)
+        if command is not None:
+            popen_args = command
     else:
         flags["start_new_session"] = True
     proc = subprocess.Popen(
-        argv,
+        popen_args,
         cwd=cwd,
         env=env,
         stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,

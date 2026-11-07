@@ -4,4 +4,4 @@ Default off. Importing this package does not poll, authenticate, or install anyt
 Analyze and implement stay off unless config turns them on.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"

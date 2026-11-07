@@ -1,4 +1,4 @@
-# Windows 工人 v1.1
+# Windows 工人 v1.1.1
 
 默认关闭。冒烟仍是默认自动任务：`BUS_SMOKE_OK`。分析（Hermes）和实现（DSH → `subagent_codex`）两个车道默认关，要在配置里单独打开。Partner 仍是协调者，工人不代替云端派工。
 
@@ -44,7 +44,7 @@ dsh --profile headless --permission-mode workspace-write --approval-policy never
 
 - Hermes 0.22.7：`%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\hermes\bin\hermes.exe`，`HERMES_HOME` 是同级的 `Local\hermes`，不是 `~\.hermes`。
 - Codex 0.167.0-alpha.3.2：`%LOCALAPPDATA%\OpenAI\Codex\bin\14b838c1d074ff01\codex.exe`（不在 PATH 上，工人不启动）。
-- DSH 0.2.2-rc.1：`E:\deepseek harness\resources\runtime\cli\bin\dsh.cmd`。路径有空格。工人用参数数组启动；在 Windows 上经 `cmd.exe /d /s /c` 调用这个 `.cmd`，不把 Issue 正文拼进命令行。
+- DSH 0.2.2-rc.1：`E:\deepseek harness\resources\runtime\cli\bin\dsh.cmd`。路径有空格。这就是安装位置，不用改文件夹名，也不用目录联接。Windows 上经 `cmd.exe /d /s /c` 调用这个 `.cmd`。`/s` 会去掉命令最外层的一对引号，所以整条命令再包一层引号，空格才不会把路径拆成 `E:\deepseek`。Issue 正文从 stdin 进入，不拼进命令行。
 
 ## 配置
 

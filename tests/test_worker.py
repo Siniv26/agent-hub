@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
@@ -16,12 +17,14 @@ from worker.constants import DSH_EXE, SMOKE_MARKER
 from worker.engine import assert_worker_python, next_backoff, run_tick
 from worker.github import GhClient, issue_from_api
 from worker.lanes import (
+    AllowlistError,
     build_dsh_argv,
     build_hermes_argv,
     interpret_analyze,
     interpret_implement,
     line_keeps_running,
     windows_cmdline,
+    windows_launch_command,
 )
 from worker.policy import Issue, decide, identity
 from worker.procutil import Completed
@@ -37,6 +40,28 @@ smoke
 ## Risk
 none
 """
+
+
+def _cmd_s_strip(command: str) -> str:
+    """Command text after cmd.exe /s removes one leading and one trailing quote."""
+    prefix = "cmd.exe /d /s /c "
+    if not command.startswith(prefix):
+        raise AssertionError(command)
+    rest = command[len(prefix):]
+    if len(rest) >= 2 and rest[0] == '"' and rest[-1] == '"':
+        return rest[1:-1]
+    return rest
+
+
+def _cmd_token(command: str) -> str:
+    """First cmd token. Quotes keep spaces inside one token."""
+    if command.startswith('"'):
+        end = command.find('"', 1)
+        if end < 0:
+            return command
+        return command[1:end]
+    part = command.split(" ", 1)[0]
+    return part
 
 
 def issue(**kwargs) -> Issue:
@@ -400,6 +425,41 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(wrapped[:4], ["cmd.exe", "/d", "/s", "/c"])
         self.assertIn("deepseek harness", wrapped[4])
         self.assertNotIn("Count the agents.", wrapped[4])
+
+    def test_spaced_cmd_path_stays_one_token(self) -> None:
+        """cmd /s strips one outer quote pair. A spaced .cmd must survive that."""
+        exe = r"E:\deepseek harness\resources\runtime\cli\bin\dsh.cmd"
+        argv = build_dsh_argv(exe)
+        wrapped = windows_cmdline(argv)
+        command = windows_launch_command(wrapped)
+        self.assertIsInstance(command, str)
+        # Popen(list) would run list2cmdline again and escape the quotes cmd sees.
+        self.assertNotEqual(command, subprocess.list2cmdline(wrapped))
+        self.assertNotIn('\\"', command)
+        self.assertEqual(_cmd_token(_cmd_s_strip(command)), exe)
+        self.assertNotEqual(_cmd_token(_cmd_s_strip(command)), r"E:\deepseek")
+        self.assertIn("--json", command)
+        self.assertNotIn("Count the agents.", command)
+
+        on_path = windows_launch_command(windows_cmdline(build_dsh_argv("dsh.cmd")))
+        self.assertEqual(_cmd_token(_cmd_s_strip(on_path)), "dsh.cmd")
+        plain = windows_launch_command(windows_cmdline(build_dsh_argv(r"C:\tools\dsh.cmd")))
+        self.assertEqual(_cmd_token(_cmd_s_strip(plain)), r"C:\tools\dsh.cmd")
+
+        spaced_arg = [
+            exe,
+            "--note",
+            "hello world",
+        ]
+        quoted = windows_launch_command(windows_cmdline(spaced_arg))
+        self.assertEqual(_cmd_token(_cmd_s_strip(quoted)), exe)
+        self.assertIn('"hello world"', _cmd_s_strip(quoted))
+
+        native = [r"C:\Program Files\hermes.exe", "--help"]
+        self.assertEqual(windows_cmdline(native), native)
+        self.assertIsNone(windows_launch_command(native))
+        with self.assertRaises(AllowlistError):
+            build_dsh_argv(exe + " & calc.exe")
 
     def test_python_guard_and_doctor_and_backoff(self) -> None:
         with self.assertRaises(SystemExit):
