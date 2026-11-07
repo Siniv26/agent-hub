@@ -2,6 +2,8 @@
 
 One shared task. DSH analyzes a tiny ask, calls `subagent_codex` once, and Partner closes the Issue.
 
+Hermes analysis is a different lane and already passed: [Issue #4](https://github.com/Siniv26/agent-hub/issues/4) closed with `HERMES_ANALYSIS_OK`. See [ROUTING.md](ROUTING.md). This checklist stays the DSH → Codex path.
+
 ## Setup / 准备
 
 1. Partner opens an Issue with the Task template.
