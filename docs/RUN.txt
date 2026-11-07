@@ -1,15 +1,17 @@
-Windows PowerShell 5.1. Default off. v1 runs only the smoke marker. It does not start Hermes, Codex, or DSH.
+Windows PowerShell 5.1. Default off. Smoke is the automatic task. Analyze and implement stay off until lanes.enabled.analyze or lanes.enabled.implement is true.
 
 1. Finish: gh auth login
    Use the device code on the phone. Cursor's GitHub connector is not runtime auth.
 2. Check the zip hash against SHA256SUMS.txt, then expand into %LOCALAPPDATA%\AgentHub\worker
+   Upgrading: do not delete state, logs, work, or config.json. Do not install the logon task as part of the upgrade.
 3. copy config.example.json config.json
+   An existing config.json without "lanes" keeps both model lanes off.
 4. $env:PYTHONUTF8="1"; $env:PYTHONIOENCODING="utf-8"; chcp 65001
 5. python -m worker doctor
 6. python -m worker once
 7. gh label create bus:ready --description "Worker may claim this issue" --color 0e8a16
 8. Open a Bus task issue from the phone (type smoke, risk none).
-9. Edit config.json to enabled true and dry_run false.
+9. Edit config.json to enabled true and dry_run false. Leave lanes off until a model lane is wanted.
 10. python -m worker arm
 11. python -m worker once --arm
 

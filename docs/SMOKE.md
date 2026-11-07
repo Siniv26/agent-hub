@@ -6,6 +6,8 @@ Hermes analysis is a different lane and already passed: [Issue #4](https://githu
 
 The Windows worker's automatic task is a separate bus smoke (`type:smoke`, `agent:partner`, `bus:ready`). It writes `BUS_SMOKE_OK` and does not call a model. See [OPS.zh.md](OPS.zh.md).
 
+Worker analyze and implement are different Issues and are off by default. Analyze is `type:analyze` + `agent:hermes` (`## Goal` / `## Task` / `## Risk`, risk `none`). Implement is `type:implement` + `agent:codex` or `agent:dsh`, and the worker calls DSH → `subagent_codex` once. This checklist stays the human DSH → Codex path. Do not add `bus:ready` here unless you mean the worker.
+
 ## Setup / 准备
 
 1. Partner opens an Issue with the Task template.

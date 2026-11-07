@@ -21,8 +21,10 @@ _PATHS = (
     "worker/constants.py",
     "worker/engine.py",
     "worker/github.py",
+    "worker/lanes.py",
     "worker/policy.py",
     "worker/procutil.py",
+    "worker/sanitize.py",
     "worker/schema.py",
     "worker/state.py",
     "config.example.json",
@@ -33,6 +35,8 @@ _PATHS = (
     "docs/OPS.zh.md",
     "docs/RUN.txt",
     ".github/ISSUE_TEMPLATE/bus-task.md",
+    ".github/ISSUE_TEMPLATE/bus-analyze.md",
+    ".github/ISSUE_TEMPLATE/bus-implement.md",
 )
 
 
@@ -48,7 +52,8 @@ def build_bundle(destination: Path, root: Path | None = None) -> Path:
         "name": "agent-hub-worker",
         "version": VERSION,
         "automatic_tasks": ["smoke"],
-        "deferred_tasks": ["hermes", "codex", "dsh"],
+        "optional_tasks": ["analyze", "implement"],
+        "deferred_tasks": ["dsh_analyze", "codex_exec"],
         "files": [
             {"path": rel, "sha256": hashlib.sha256(data).hexdigest()}
             for rel, data in files
