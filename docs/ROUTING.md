@@ -6,37 +6,54 @@ Issues 是任务总线。一条 Issue 一件事。标签标明负责人、工作
 
 ## Partner (Grok Bot) / 协调
 
-Triage. Create and update Issues. Decide who runs. Phone and remote coordination.
+Triage. Create and update Issues. Decide who runs.
 
-Partner does not take implementation that belongs to Codex, and does not spend a DSH turn on engineering.
+Partner leaves implementation to Codex. For analysis text alone, Partner uses Hermes oneshot. Use DSH when the turn needs the Harness UI or a `subagent_codex` call.
 
-## DSH / 分析
+Phone/remote entry is deferred: Telegram gateway, and Tailscale tunnel to serve/dashboard. Do not treat either as ready.
+
+## DSH / 编排
 
 DeepSeek Harness (`deepseek-flash`).
 
-Analysis, summarization, planning, cheap classification, draft Issue bodies. Prefer DSH for high-volume, low-risk thinking.
+DSH stays the path for the Harness UI and for `subagent_codex` orchestration. It can still analyze, summarize, plan, classify, and draft Issue bodies.
 
-Inside one DSH turn, DSH may call `subagent_codex` once when a coding step is required. That call is the handoff. Do not start a second implementation in parallel unless Partner says so.
+When Partner only needs analysis text, use Hermes oneshot. That CLI path is the cheaper one.
+
+Inside one DSH turn, call `subagent_codex` once when a coding step is required. That call is the handoff. Do not start a second implementation in parallel unless Partner says so.
 
 ## Codex / 实现
 
-`gpt-6.1-sol` via the native CLI bridge.
+Code changes, debugging, tests, PR-quality engineering. Prefer Codex for implementation (`gpt-6.1-sol`).
 
-Code changes, debugging, tests, PR-quality engineering. Prefer Codex for implementation.
+Two ways in:
 
-## Hermes / 本地执行
+- DSH calls `subagent_codex` inside one DSH turn
+- native CLI bridge to the current hashed OpenAI Codex binary
 
-Stub only. Local Windows execution / ACP comes later. Do not route live work here until Partner marks Hermes ready.
+## Hermes / 分析（CLI）
+
+Hermes 0.22.7 oneshot is the DeepSeek analysis worker on Windows:
+
+```text
+hermes -z "<brief>" --provider deepseek -m deepseek-flash
+```
+
+Binary: `%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\hermes\bin\hermes.exe`
+
+Set `HERMES_HOME` to that `Local\hermes` directory (`...\LocalCache\Local\hermes`). Do not use `~\.hermes`.
+
+Verified smoke: [Issue #4](https://github.com/Siniv26/agent-hub/issues/4) closed PASS with `HERMES_ANALYSIS_OK`.
 
 ## Who runs / 派工
 
 | Signal | Route | Labels |
 | --- | --- | --- |
-| Unclear scope, plan, summary, or a draft Issue | DSH | `agent:dsh` `type:analyze` |
+| Analysis text only | Hermes oneshot | `agent:hermes` `type:analyze` |
+| Harness UI, or analysis that must call Codex | DSH | `agent:dsh` `type:analyze` |
 | Code, tests, debugging, PR-quality change | Codex | `agent:codex` `type:implement` |
-| Triage, status, handoff, phone or remote | Partner | `agent:partner` |
-| Local Windows or ACP execution (later) | Hermes | `agent:hermes` `type:ops` |
-| Bus connectivity check | DSH, then one Codex call | `type:smoke` — [SMOKE.md](SMOKE.md) |
+| Triage, status, handoff | Partner | `agent:partner` |
+| DSH → Codex connectivity check | DSH, then one Codex call | `type:smoke` — [SMOKE.md](SMOKE.md) |
 
 Partner sets **Owner agent** and moves status: `status:todo` → `status:doing` → `status:done`, or `status:blocked`.
 
