@@ -11,9 +11,10 @@ from worker.schema import SchemaError, parse_body
 
 _PAIRS = {
     frozenset({"agent:partner", "type:smoke"}): "smoke",
-    frozenset({"agent:hermes", "type:analyze"}): "hermes_deferred",
-    frozenset({"agent:dsh", "type:analyze"}): "dsh_deferred",
-    frozenset({"agent:codex", "type:implement"}): "codex_deferred",
+    frozenset({"agent:hermes", "type:analyze"}): "analyze",
+    frozenset({"agent:dsh", "type:analyze"}): "dsh_analyze",
+    frozenset({"agent:codex", "type:implement"}): "implement",
+    frozenset({"agent:dsh", "type:implement"}): "implement",
 }
 
 
@@ -52,7 +53,7 @@ def identity(issue: Issue) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def decide(issue: Issue) -> Decision:
+def decide(issue: Issue, *, analyze: bool = False, implement: bool = False) -> Decision:
     if issue.state.upper() != "OPEN":
         return Decision("skip", "", "closed")
     if issue.author.casefold() != AUTHOR.casefold():
@@ -67,21 +68,27 @@ def decide(issue: Issue) -> Decision:
     pair = _PAIRS.get(frozenset(agents | types))
     if pair is None or len(agents) != 1 or len(types) != 1:
         return Decision("block", "unsupported_task", "unsupported_task")
+    kind = {"smoke": "smoke", "analyze": "analyze", "dsh_analyze": "analyze", "implement": "implement"}[pair]
     try:
         body = parse_body(issue.body)
     except SchemaError:
-        return Decision("block", pair, "schema")
-    expected = {
-        "smoke": "smoke",
-        "hermes_deferred": "analyze",
-        "dsh_deferred": "analyze",
-        "codex_deferred": "implement",
-    }[pair]
+        return Decision("block", kind, "schema")
+    expected = {"smoke": "smoke", "analyze": "analyze", "dsh_analyze": "analyze", "implement": "implement"}[pair]
     if body.task != expected:
-        return Decision("block", pair, "schema")
+        return Decision("block", kind, "schema")
+    if body.risk != "none":
+        return Decision("block", kind, "risk")
     if pair == "smoke":
         return Decision("run", "smoke", "")
-    return Decision("block", pair, pair)
+    if pair == "dsh_analyze":
+        return Decision("block", "analyze", "dsh_deferred")
+    if pair == "analyze" and not analyze:
+        return Decision("block", "analyze", "lane_disabled")
+    if pair == "implement" and not implement:
+        return Decision("block", "implement", "lane_disabled")
+    if pair == "analyze":
+        return Decision("run", "analyze", "")
+    return Decision("run", "implement", "")
 
 
 def repo_constant() -> str:

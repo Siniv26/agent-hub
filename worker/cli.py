@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from worker import __version__
-from worker.config import ConfigError, load_config, real_work_allowed
+from worker.config import ConfigError, lane_config, load_config, real_work_allowed
 from worker.constants import (
     CODEX_EXE,
     CODEX_VERSION,
@@ -84,15 +84,26 @@ def install_task_argv(worker_root: Path) -> list[str]:
 
 def doctor(cfg, store: Store, *, which=shutil.which, out=print) -> int:
     out(f"agent-hub-worker {__version__}")
-    out(f"enabled={cfg.enabled} dry_run={cfg.dry_run} armed={store.armed()} stop={store.stop_requested()}")
-    out("automatic task: smoke only (BUS_SMOKE_OK). No model process is started.")
-    out("deferred: " + REASONS["hermes_deferred"])
-    out("deferred: " + REASONS["codex_deferred"])
+    out(
+        f"enabled={cfg.enabled} dry_run={cfg.dry_run} armed={store.armed()} "
+        f"stop={store.stop_requested()} analyze={cfg.analyze} implement={cfg.implement}"
+    )
+    if cfg.analyze or cfg.implement:
+        out("A lane flag that is true starts that child only when enabled, dry_run is false, and the worker is armed.")
+    else:
+        out("automatic task: smoke only (BUS_SMOKE_OK). Analyze and implement are off.")
+    out("analyze backend, when lanes.enabled.analyze is true: Hermes --safe-mode --ignore-rules -t todo.")
     out("deferred: " + REASONS["dsh_deferred"])
-    out(f"recorded Hermes {HERMES_VERSION} not launched: {HERMES_EXE}")
-    out(f"recorded HERMES_HOME not used: {HERMES_HOME}")
+    out(
+        "implement backend, when lanes.enabled.implement is true: "
+        "DSH --profile headless --permission-mode workspace-write --approval-policy never --json, "
+        "one subagent_codex, fresh clone."
+    )
+    out("deferred: " + REASONS["codex_deferred"])
+    out(f"recorded Hermes {HERMES_VERSION}: {HERMES_EXE}")
+    out(f"recorded HERMES_HOME, not copied: {HERMES_HOME}")
     out(f"recorded Codex {CODEX_VERSION} not launched: {CODEX_EXE}")
-    out(f"recorded DSH {DSH_VERSION} not launched: {DSH_EXE}")
+    out(f"recorded DSH {DSH_VERSION}: {DSH_EXE}")
     found = which("gh") or which("gh.exe")
     if not found:
         out(_GH_HELP)
@@ -208,7 +219,7 @@ def _start(cfg, store: Store) -> int:
     try:
         while not stop.is_set() and not store.stop_requested():
             try:
-                run_tick(gh, store, log, dry_run=False)
+                run_tick(gh, store, log, dry_run=False, lanes=lane_config(cfg))
                 delay = cfg.poll_seconds
             except GhError:
                 delay = next_backoff(delay)
@@ -234,7 +245,7 @@ def _tick(cfg, store: Store, *, dry_run: bool) -> int:
         print("another worker holds the lock")
         return 3
     try:
-        run_tick(gh, store, log, dry_run=dry_run)
+        run_tick(gh, store, log, dry_run=dry_run, lanes=lane_config(cfg))
     except GhError:
         print("gh read failed")
         return 1
@@ -244,7 +255,10 @@ def _tick(cfg, store: Store, *, dry_run: bool) -> int:
 
 
 def _status(cfg, store: Store) -> int:
-    print(f"enabled={cfg.enabled} dry_run={cfg.dry_run} armed={store.armed()} stop={store.stop_requested()}")
+    print(
+        f"enabled={cfg.enabled} dry_run={cfg.dry_run} armed={store.armed()} "
+        f"stop={store.stop_requested()} analyze={cfg.analyze} implement={cfg.implement}"
+    )
     for claim in store.unfinished():
         print(f"unfinished #{claim.issue} {claim.phase} {claim.reason}")
     return 0

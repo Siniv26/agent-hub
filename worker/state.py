@@ -24,6 +24,8 @@ class Claim:
     writeback_started: bool = False
     reason: str = ""
     result: str = ""
+    detail: str = ""
+    close_issue: bool = False
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -37,6 +39,8 @@ class Claim:
             "writeback_started": self.writeback_started,
             "reason": self.reason,
             "result": self.result,
+            "detail": self.detail,
+            "close_issue": self.close_issue,
         }
 
     @classmethod
@@ -52,6 +56,8 @@ class Claim:
             writeback_started=bool(data.get("writeback_started")),
             reason=str(data.get("reason") or ""),
             result=str(data.get("result") or ""),
+            detail=str(data.get("detail") or ""),
+            close_issue=bool(data.get("close_issue")),
         )
 
 

@@ -11,12 +11,21 @@ from pathlib import Path
 
 from worker.cli import doctor, install_task_argv, main
 from worker.comments import render
-from worker.config import ConfigError, load_config, real_work_allowed
-from worker.constants import SMOKE_MARKER
+from worker.config import ConfigError, LaneConfig, load_config, real_work_allowed
+from worker.constants import DSH_EXE, SMOKE_MARKER
 from worker.engine import assert_worker_python, next_backoff, run_tick
 from worker.github import GhClient, issue_from_api
+from worker.lanes import (
+    build_dsh_argv,
+    build_hermes_argv,
+    interpret_analyze,
+    interpret_implement,
+    line_keeps_running,
+    windows_cmdline,
+)
 from worker.policy import Issue, decide, identity
 from worker.procutil import Completed
+from worker.sanitize import sanitize_public
 from worker.schema import SchemaError, parse_body
 from worker.state import Claim, Lock, LockError, Store
 
@@ -108,11 +117,15 @@ class WorkerTests(unittest.TestCase):
 
     def test_schema_rejects_shell_url_and_secret(self) -> None:
         parse_body("## Goal\n检查通路\n## Task\nsmoke\n## Risk\nnone")
+        self.assertEqual(
+            parse_body("## Goal\nNeeds a person.\n## Task\nanalyze\n## Risk\nhigh").risk,
+            "high",
+        )
         for goal in ("hello && calc", "see https://evil.test", "token ghp_abcdefghijklmnopqrst"):
             with self.assertRaises(SchemaError):
                 parse_body(f"## Goal\n{goal}\n## Task\nsmoke\n## Risk\nnone")
         with self.assertRaises(SchemaError):
-            parse_body("## Goal\nok\n## Task\nsmoke\n## Risk\nhigh")
+            parse_body("## Goal\nok\n## Task\nsmoke\n## Risk\nhigh && calc")
 
     def test_smoke_claim_closes_once(self) -> None:
         gh = FakeGH()
@@ -180,14 +193,15 @@ class WorkerTests(unittest.TestCase):
         self.assertNotIn("calc", parsed.body)
         self.assertEqual(decide(parsed).action, "run")
 
-    def test_model_lanes_are_deferred_without_a_process(self) -> None:
+    def test_model_lanes_are_off_without_a_process(self) -> None:
         cases = [
-            ("hermes_deferred", {"agent:hermes", "type:analyze"}, "analyze", "DoNotPublishHermes"),
+            ("lane_disabled", {"agent:hermes", "type:analyze"}, "analyze", "DoNotPublishHermes"),
             ("dsh_deferred", {"agent:dsh", "type:analyze"}, "analyze", "DoNotPublishDsh"),
-            ("codex_deferred", {"agent:codex", "type:implement"}, "implement", "DoNotPublishCodex"),
+            ("lane_disabled", {"agent:codex", "type:implement"}, "implement", "DoNotPublishCodex"),
+            ("lane_disabled", {"agent:dsh", "type:implement"}, "implement", "DoNotPublishDshImpl"),
         ]
         for reason, labels, task, goal in cases:
-            with self.subTest(reason=reason):
+            with self.subTest(goal=goal):
                 gh = FakeGH()
                 body = f"## Goal\n{goal}\n## Task\n{task}\n## Risk\nnone\n"
                 gh.add(
@@ -196,12 +210,15 @@ class WorkerTests(unittest.TestCase):
                         labels=frozenset({"bus:ready", "status:todo", *labels}),
                     )
                 )
-                self.assertEqual(run_tick(gh, self.store, self.log, dry_run=False), "blocked")
+                self.assertEqual(
+                    run_tick(gh, self.store, self.log, dry_run=False, executor=Boom()),
+                    "blocked",
+                )
                 text = gh.comments[0][1]
                 self.assertIn(reason, text)
                 self.assertNotIn(goal, text)
                 self.assertNotIn(7, gh.closed)
-                self.store = Store(self.root / f"state-{reason}")
+                self.store = Store(self.root / f"state-{goal}")
                 self.store.ensure()
 
     def test_snapshot_change_discards_success(self) -> None:
@@ -269,6 +286,8 @@ class WorkerTests(unittest.TestCase):
             cfg = load_config(ROOT / "config.example.json")
             self.assertFalse(cfg.enabled)
             self.assertTrue(cfg.dry_run)
+            self.assertFalse(cfg.analyze)
+            self.assertFalse(cfg.implement)
             self.assertFalse(real_work_allowed(cfg, armed=True))
             raw = json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
             raw["repo"] = "evil/other"
@@ -286,6 +305,30 @@ class WorkerTests(unittest.TestCase):
             bad.write_text(json.dumps(raw), encoding="utf-8")
             with self.assertRaises(ConfigError):
                 load_config(bad)
+            raw = json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
+            raw.pop("lanes")
+            bad.write_text(json.dumps(raw), encoding="utf-8")
+            legacy = load_config(bad)
+            self.assertFalse(legacy.analyze)
+            self.assertFalse(legacy.implement)
+            raw = json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
+            raw["lanes"] = {"toolsets": "memory,file,terminal"}
+            bad.write_text(json.dumps(raw), encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                load_config(bad)
+            raw = json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
+            raw["lanes"]["analyze_timeout_seconds"] = 5
+            bad.write_text(json.dumps(raw), encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                load_config(bad)
+            raw = json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
+            raw["enabled"] = True
+            raw["dry_run"] = True
+            raw["lanes"]["enabled"]["analyze"] = True
+            bad.write_text(json.dumps(raw), encoding="utf-8")
+            armed = load_config(bad)
+            self.assertTrue(armed.analyze)
+            self.assertFalse(real_work_allowed(armed, armed=True))
         finally:
             if previous is None:
                 os.environ.pop("LOCALAPPDATA", None)
@@ -334,6 +377,29 @@ class WorkerTests(unittest.TestCase):
         self.assertNotIn("HIGHEST", install.upper())
         with self.assertRaises(ValueError):
             install_task_argv(Path(r"C:\Users\a b\AgentHub"))
+        prompt = "Public issue analysis.\nGoal: Count the agents."
+        hermes_argv = build_hermes_argv(r"C:\hermes\hermes.exe", prompt)
+        self.assertIn("--safe-mode", hermes_argv)
+        self.assertIn("--ignore-rules", hermes_argv)
+        self.assertEqual(hermes_argv[hermes_argv.index("-t") + 1], "todo")
+        self.assertNotIn("--yolo", hermes_argv)
+        self.assertNotIn("memory", hermes_argv)
+        self.assertNotIn("delegation", hermes_argv)
+        dsh_argv = build_dsh_argv(DSH_EXE)
+        joined = " ".join(dsh_argv)
+        self.assertIn("deepseek harness", joined)
+        self.assertIn("--profile", dsh_argv)
+        self.assertIn("headless", dsh_argv)
+        self.assertIn("workspace-write", dsh_argv)
+        self.assertIn("never", dsh_argv)
+        self.assertIn("--json", dsh_argv)
+        self.assertNotIn("--add-dir", dsh_argv)
+        self.assertNotIn("dangerously-bypass-approvals-and-sandbox", dsh_argv)
+        self.assertNotIn("Count the agents.", joined)
+        wrapped = windows_cmdline(dsh_argv)
+        self.assertEqual(wrapped[:4], ["cmd.exe", "/d", "/s", "/c"])
+        self.assertIn("deepseek harness", wrapped[4])
+        self.assertNotIn("Count the agents.", wrapped[4])
 
     def test_python_guard_and_doctor_and_backoff(self) -> None:
         with self.assertRaises(SystemExit):
@@ -369,7 +435,587 @@ class WorkerTests(unittest.TestCase):
             self.assertIn(b'"enabled": false', example)
             manifest = json.loads(archive.read("manifest.json"))
             self.assertEqual(manifest["automatic_tasks"], ["smoke"])
-            self.assertIn("hermes", manifest["deferred_tasks"])
+            self.assertEqual(manifest["optional_tasks"], ["analyze", "implement"])
+            self.assertIn("dsh_analyze", manifest["deferred_tasks"])
+            self.assertIn("codex_exec", manifest["deferred_tasks"])
+            self.assertNotIn("hermes", manifest["deferred_tasks"])
+
+    def test_malicious_analyze_does_not_launch(self) -> None:
+        gh = FakeGH()
+        gh.add(
+            issue(
+                body=task_body("analyze", "hello && calc.exe"),
+                labels=lane_labels("agent:hermes", "type:analyze"),
+            )
+        )
+        self.assertEqual(
+            run_tick(
+                gh,
+                self.store,
+                self.log,
+                dry_run=False,
+                lanes=lane_flags(self.root, analyze=True),
+                executor=Boom(),
+            ),
+            "blocked",
+        )
+        self.assertNotIn("calc", gh.comments[0][1])
+        self.assertNotIn(7, gh.closed)
+
+    def test_high_risk_is_blocked_for_a_human(self) -> None:
+        gh = FakeGH()
+        gh.add(
+            issue(
+                body=task_body("analyze", "Count the agents.", risk="high"),
+                labels=lane_labels("agent:hermes", "type:analyze"),
+            )
+        )
+        self.assertEqual(
+            run_tick(
+                gh,
+                self.store,
+                self.log,
+                dry_run=False,
+                lanes=lane_flags(self.root, analyze=True),
+                executor=Boom(),
+            ),
+            "blocked",
+        )
+        text = gh.comments[0][1]
+        self.assertIn("reason: risk", text)
+        self.assertIn("human", text)
+        self.assertNotIn("Count the agents.", text)
+        self.assertNotIn(7, gh.closed)
+
+    def test_dsh_analyze_stays_deferred_when_analyze_is_on(self) -> None:
+        gh = FakeGH()
+        gh.add(
+            issue(
+                body=task_body("analyze", "Count the agents."),
+                labels=lane_labels("agent:dsh", "type:analyze"),
+            )
+        )
+        self.assertEqual(
+            run_tick(
+                gh,
+                self.store,
+                self.log,
+                dry_run=False,
+                lanes=lane_flags(self.root, analyze=True),
+                executor=Boom(),
+            ),
+            "blocked",
+        )
+        self.assertIn("dsh_deferred", gh.comments[0][1])
+
+    def test_dry_run_does_not_launch_an_enabled_lane(self) -> None:
+        gh = FakeGH()
+        gh.add(
+            issue(
+                body=task_body("analyze", "Count the agents."),
+                labels=lane_labels("agent:hermes", "type:analyze"),
+            )
+        )
+        self.assertEqual(
+            run_tick(
+                gh,
+                self.store,
+                self.log,
+                dry_run=True,
+                lanes=lane_flags(self.root, analyze=True),
+                executor=Boom(),
+            ),
+            "dry-run",
+        )
+        self.assertEqual(gh.comments, [])
+        self.assertEqual(list(self.store.claims.glob("*.json")), [])
+
+    def test_analyze_success_sanitizes_and_does_not_close(self) -> None:
+        gh = FakeGH()
+        gh.add(
+            issue(
+                body=task_body("analyze", "Count the agents."),
+                labels=lane_labels("agent:hermes", "type:analyze"),
+            )
+        )
+        exe = FakeExec()
+        exe.analyze_result = Completed(
+            0,
+            "Four agents share one issue bus.\n".encode()
+            + b"ghp_abcdefghijklmnopqrstuvwxyz sk-abcdefghijklmnopqrst",
+            b"C:\\Users\\me\\.hermes\\auth.json",
+            False,
+        )
+        self.assertEqual(
+            run_tick(
+                gh,
+                self.store,
+                self.log,
+                dry_run=False,
+                lanes=lane_flags(self.root, analyze=True),
+                executor=exe,
+            ),
+            "done",
+        )
+        text = gh.comments[0][1]
+        self.assertIn("Four agents share one issue bus.", text)
+        self.assertIn("[redacted]", text)
+        self.assertNotIn("ghp_", text)
+        self.assertNotIn("sk-abc", text)
+        self.assertNotIn("auth.json", text)
+        self.assertNotIn("Count the agents.", text)
+        self.assertIn("not a full", text)
+        self.assertIn("--safe-mode", exe.analyze[0][0])
+        self.assertEqual(exe.analyze[0][0][exe.analyze[0][0].index("-t") + 1], "todo")
+        self.assertIn("status:done", gh.issues[7].labels)
+        self.assertNotIn(7, gh.closed)
+        self.assertEqual(run_tick(gh, self.store, self.log, dry_run=False, executor=exe), "idle")
+        self.assertEqual(len(exe.analyze), 1)
+
+    def test_analyze_timeout_restart_and_failed_writeback(self) -> None:
+        gh = FakeGH()
+        gh.add(
+            issue(
+                body=task_body("analyze", "Count the agents."),
+                labels=lane_labels("agent:hermes", "type:analyze"),
+            )
+        )
+        exe = FakeExec()
+        exe.analyze_result = Completed(1, b"partial ghp_abcdefghijklmnopqrstuvwxyz", b"", True)
+        lanes = lane_flags(self.root, analyze=True)
+        self.assertEqual(run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=exe), "blocked")
+        self.assertIn("timeout", gh.comments[0][1])
+        self.assertNotIn("ghp_", gh.comments[0][1])
+        self.assertNotIn(7, gh.closed)
+        self.assertEqual(run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=exe), "idle")
+        self.assertEqual(len(exe.analyze), 1)
+
+        gh = FakeGH()
+        item = issue(
+            body=task_body("analyze", "Count the agents."),
+            labels=lane_labels("agent:hermes", "type:analyze"),
+        )
+        gh.add(item)
+        self.store = Store(self.root / "restart-analyze")
+        self.store.ensure()
+        self.store.save(
+            Claim(
+                issue=7,
+                claim_id="11111111-1111-1111-1111-111111111111",
+                identity=identity(item),
+                kind="analyze",
+                phase="reserved",
+                child_started=True,
+            )
+        )
+        self.assertEqual(
+            run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=Boom()),
+            "blocked",
+        )
+        self.assertIn("restart_after_child", gh.comments[0][1])
+
+        gh = FakeGH()
+        gh.fail_comment = True
+        gh.add(
+            issue(
+                body=task_body("analyze", "Count the agents."),
+                labels=lane_labels("agent:hermes", "type:analyze"),
+            )
+        )
+        exe = FakeExec()
+        self.store = Store(self.root / "writeback-analyze")
+        self.store.ensure()
+        self.assertEqual(
+            run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=exe),
+            "writeback-failed",
+        )
+        self.assertEqual(
+            run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=exe),
+            "idle",
+        )
+        self.assertEqual(len(exe.analyze), 1)
+        self.assertEqual(gh.comments, [])
+
+    def test_missing_binary_and_probe_fail_closed(self) -> None:
+        gh = FakeGH()
+        gh.add(
+            issue(
+                body=task_body("analyze", "Count the agents."),
+                labels=lane_labels("agent:hermes", "type:analyze"),
+            )
+        )
+        exe = FakeExec()
+        exe.hermes = False
+        lanes = lane_flags(self.root, analyze=True)
+        self.assertEqual(run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=exe), "blocked")
+        self.assertIn("missing_binary", gh.comments[0][1])
+        self.assertEqual(exe.probes, 0)
+        self.assertEqual(exe.analyze, [])
+
+        gh = FakeGH()
+        gh.add(
+            issue(
+                number=8,
+                body=task_body("analyze", "Count the agents."),
+                labels=lane_labels("agent:hermes", "type:analyze"),
+            )
+        )
+        exe = FakeExec()
+        exe.probe = False
+        self.store = Store(self.root / "probe")
+        self.store.ensure()
+        self.assertEqual(run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=exe), "blocked")
+        self.assertIn("tool_allowlist", gh.comments[0][1])
+        self.assertEqual(exe.analyze, [])
+
+        gh = FakeGH()
+        gh.add(
+            issue(
+                number=9,
+                body=task_body("analyze", "Count the agents."),
+                labels=lane_labels("agent:hermes", "type:analyze"),
+            )
+        )
+        self.store = Store(self.root / "real-missing")
+        self.store.ensure()
+        self.assertEqual(
+            run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes),
+            "blocked",
+        )
+        self.assertIn("missing_binary", gh.comments[0][1])
+
+    def test_snapshot_discards_model_output(self) -> None:
+        gh = FakeGH()
+        gh.flip_after = 2
+        gh.add(
+            issue(
+                body=task_body("analyze", "Count the agents."),
+                labels=lane_labels("agent:hermes", "type:analyze"),
+            )
+        )
+        exe = FakeExec()
+        exe.analyze_result = Completed(0, b"UNIQUE_MODEL_OUTPUT", b"", False)
+        self.assertEqual(
+            run_tick(
+                gh,
+                self.store,
+                self.log,
+                dry_run=False,
+                lanes=lane_flags(self.root, analyze=True),
+                executor=exe,
+            ),
+            "blocked",
+        )
+        self.assertEqual(len(exe.analyze), 1)
+        self.assertNotIn("UNIQUE_MODEL_OUTPUT", gh.comments[0][1])
+        self.assertIn("snapshot_changed", gh.comments[0][1])
+
+    def test_implement_success_closes_only_with_one_pr(self) -> None:
+        claim = "11111111-1111-1111-1111-111111111111"
+        gh = FakeGH()
+        gh.add(
+            issue(
+                body=task_body("implement", "Add a readme line."),
+                labels=lane_labels("agent:codex", "type:implement"),
+            )
+        )
+        exe = FakeExec()
+        exe.implement_result = Completed(
+            0,
+            implement_stdout(
+                "Opened a review pull request.\n"
+                "PR_URL: https://github.com/Siniv26/agent-hub/pull/21\n"
+                "sk-abcdefghijklmnopqrst"
+            ),
+            b"",
+            False,
+        )
+        lanes = lane_flags(self.root, implement=True)
+        self.assertEqual(
+            run_tick(
+                gh,
+                self.store,
+                self.log,
+                dry_run=False,
+                lanes=lanes,
+                executor=exe,
+                new_id=lambda: claim,
+            ),
+            "done",
+        )
+        text = gh.comments[0][1]
+        self.assertIn("https://github.com/Siniv26/agent-hub/pull/21", text)
+        self.assertNotIn("sk-abc", text)
+        self.assertNotIn("Add a readme line.", text)
+        self.assertIn("not confined", text)
+        self.assertIn(7, gh.closed)
+        argv, _cwd, stdin = exe.implement[0]
+        self.assertNotIn("Add a readme line.", " ".join(argv))
+        self.assertIn("workspace-write", argv)
+        self.assertIn("subagent_codex", stdin.decode())
+        self.assertIn("Do not merge", stdin.decode())
+        self.assertIn("Do not deploy", stdin.decode())
+        self.assertIn("Do not delete", stdin.decode())
+        self.assertEqual(len(exe.clones), 1)
+        self.assertEqual(
+            run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=exe),
+            "idle",
+        )
+        self.assertEqual(len(exe.implement), 1)
+
+    def test_implement_blocks_without_pr_or_on_policy(self) -> None:
+        lanes = lane_flags(self.root, implement=True)
+        claim = "22222222-2222-2222-2222-222222222222"
+
+        def once(stdout: bytes, number: int):
+            gh = FakeGH()
+            gh.add(
+                issue(
+                    number=number,
+                    body=task_body("implement", "Add a readme line."),
+                    labels=lane_labels("agent:dsh", "type:implement"),
+                )
+            )
+            exe = FakeExec()
+            exe.implement_result = Completed(0, stdout, b"", False)
+            store = Store(self.root / f"impl-{number}")
+            store.ensure()
+            status = run_tick(
+                gh,
+                store,
+                self.log,
+                dry_run=False,
+                lanes=lanes,
+                executor=exe,
+                new_id=lambda: claim,
+            )
+            return status, gh, exe
+
+        status, gh, exe = once(implement_stdout("I looked around."), 11)
+        self.assertEqual(status, "blocked")
+        self.assertIn("ambiguous", gh.comments[0][1])
+        self.assertNotIn(11, gh.closed)
+        self.assertEqual(len(exe.implement), 1)
+
+        status, gh, exe = once(implement_stdout("BLOCKED"), 12)
+        self.assertEqual(status, "blocked")
+        self.assertIn("ambiguous", gh.comments[0][1])
+        self.assertNotIn(12, gh.closed)
+
+        status, gh, exe = once(
+            implement_stdout(
+                "Opened.\nPR_URL: https://github.com/Siniv26/agent-hub/pull/21",
+                codex=2,
+            ),
+            13,
+        )
+        self.assertEqual(status, "blocked")
+        self.assertIn("ambiguous", gh.comments[0][1])
+        self.assertNotIn(13, gh.closed)
+
+        status, gh, exe = once(
+            implement_stdout(
+                "Opened.\nPR_URL: https://github.com/Siniv26/agent-hub/pull/21",
+                extra=[
+                    json.dumps(
+                        {
+                            "type": "tool_call",
+                            "name": "shell",
+                            "arguments": {"command": "gh pr merge 21"},
+                        }
+                    )
+                ],
+            ),
+            14,
+        )
+        self.assertEqual(status, "blocked")
+        self.assertIn("policy", gh.comments[0][1])
+        self.assertNotIn("gh pr merge", gh.comments[0][1])
+        self.assertNotIn(14, gh.closed)
+
+    def test_implement_timeout_missing_binary_and_writeback(self) -> None:
+        lanes = lane_flags(self.root, implement=True)
+        gh = FakeGH()
+        gh.add(
+            issue(
+                body=task_body("implement", "Add a readme line."),
+                labels=lane_labels("agent:codex", "type:implement"),
+            )
+        )
+        exe = FakeExec()
+        exe.implement_result = Completed(1, b"", b"secret ghp_abcdefghijklmnopqrstuvwxyz", True)
+        self.assertEqual(
+            run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=exe),
+            "blocked",
+        )
+        self.assertIn("timeout", gh.comments[0][1])
+        self.assertNotIn("ghp_", gh.comments[0][1])
+        self.assertEqual(
+            run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=exe),
+            "idle",
+        )
+        self.assertEqual(len(exe.implement), 1)
+
+        gh = FakeGH()
+        gh.add(
+            issue(
+                number=15,
+                body=task_body("implement", "Add a readme line."),
+                labels=lane_labels("agent:codex", "type:implement"),
+            )
+        )
+        exe = FakeExec()
+        exe.dsh = False
+        self.store = Store(self.root / "no-dsh")
+        self.store.ensure()
+        self.assertEqual(
+            run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=exe),
+            "blocked",
+        )
+        self.assertIn("missing_binary", gh.comments[0][1])
+        self.assertEqual(exe.clones, [])
+
+        gh = FakeGH()
+        gh.fail_comment = True
+        gh.add(
+            issue(
+                number=16,
+                body=task_body("implement", "Add a readme line."),
+                labels=lane_labels("agent:codex", "type:implement"),
+            )
+        )
+        exe = FakeExec()
+        exe.implement_result = Completed(
+            0,
+            implement_stdout("Opened.\nPR_URL: https://github.com/Siniv26/agent-hub/pull/21"),
+            b"",
+            False,
+        )
+        self.store = Store(self.root / "impl-writeback")
+        self.store.ensure()
+        self.assertEqual(
+            run_tick(
+                gh,
+                self.store,
+                self.log,
+                dry_run=False,
+                lanes=lanes,
+                executor=exe,
+                new_id=lambda: "33333333-3333-3333-3333-333333333333",
+            ),
+            "writeback-failed",
+        )
+        self.assertEqual(
+            run_tick(gh, self.store, self.log, dry_run=False, lanes=lanes, executor=exe),
+            "idle",
+        )
+        self.assertEqual(len(exe.implement), 1)
+
+    def test_output_sanitizer_and_policy_lines(self) -> None:
+        dirty = "see C:\\Users\\me\\AppData\\Local\\secret auth.json and " + ("A" * 2000)
+        cleaned = sanitize_public(dirty, limit=100)
+        self.assertNotIn("Users", cleaned)
+        self.assertNotIn("auth.json", cleaned)
+        self.assertIn("[truncated]", cleaned)
+        secret_only = interpret_analyze(Completed(0, b"ghp_abcdefghijklmnopqrstuvwxyz", b"", False))
+        self.assertEqual(secret_only.reason, "model_failed")
+        self.assertNotIn("ghp_", secret_only.detail)
+        state = {"codex": 0}
+        bad = json.dumps(
+            {"type": "tool_call", "name": "shell", "arguments": {"command": "git push --force"}}
+        ).encode()
+        self.assertFalse(line_keeps_running(bad, state))
+        good = json.dumps(
+            {"type": "tool_call", "name": "subagent_codex", "arguments": {"task": "Do not deploy"}}
+        ).encode()
+        self.assertTrue(line_keeps_running(good, state))
+        self.assertFalse(line_keeps_running(good, state))
+        blocked = interpret_implement(
+            Completed(0, implement_stdout("BLOCKED\nPR_URL: https://github.com/Siniv26/agent-hub/pull/4"), b"", False)
+        )
+        self.assertFalse(blocked.close)
+        self.assertEqual(blocked.reason, "ambiguous")
+
+
+def task_body(task: str, goal: str, risk: str = "none") -> str:
+    return f"## Goal\n{goal}\n## Task\n{task}\n## Risk\n{risk}\n"
+
+
+def lane_labels(*names: str) -> frozenset[str]:
+    return frozenset({"bus:ready", "status:todo", *names})
+
+
+def lane_flags(root: Path, *, analyze: bool = False, implement: bool = False) -> LaneConfig:
+    return LaneConfig(analyze=analyze, implement=implement, work_dir=root / "work")
+
+
+def implement_stdout(text: str, *, codex: int = 1, extra: list[str] | None = None) -> bytes:
+    lines = [
+        json.dumps(
+            {"type": "tool_call", "name": "subagent_codex", "arguments": {"task": "edit the readme"}}
+        )
+        for _ in range(codex)
+    ]
+    if extra:
+        lines.extend(extra)
+    lines.append(json.dumps({"type": "final", "reason": {"kind": "completed"}, "text": text}))
+    return ("\n".join(lines) + "\n").encode()
+
+
+class Boom:
+    def hermes_exists(self) -> bool:
+        raise AssertionError("hermes exists")
+
+    def dsh_exists(self) -> bool:
+        raise AssertionError("dsh exists")
+
+    def probe_hermes(self) -> bool:
+        raise AssertionError("probe")
+
+    def clone(self, dest: Path) -> bool:
+        raise AssertionError("clone")
+
+    def run_analyze(self, argv, cwd) -> Completed:
+        raise AssertionError("analyze")
+
+    def run_implement(self, argv, cwd, stdin: bytes) -> Completed:
+        raise AssertionError("implement")
+
+
+class FakeExec:
+    def __init__(self) -> None:
+        self.analyze: list[tuple] = []
+        self.implement: list[tuple] = []
+        self.clones: list[Path] = []
+        self.probes = 0
+        self.hermes = True
+        self.dsh = True
+        self.probe = True
+        self.clone_ok = True
+        self.analyze_result = Completed(0, b"A short analysis.\n", b"", False)
+        self.implement_result = Completed(0, b"", b"", False)
+
+    def hermes_exists(self) -> bool:
+        return self.hermes
+
+    def dsh_exists(self) -> bool:
+        return self.dsh
+
+    def probe_hermes(self) -> bool:
+        self.probes += 1
+        return self.probe
+
+    def clone(self, dest: Path) -> bool:
+        self.clones.append(dest)
+        return self.clone_ok
+
+    def run_analyze(self, argv, cwd) -> Completed:
+        self.analyze.append((argv, cwd))
+        return self.analyze_result
+
+    def run_implement(self, argv, cwd, stdin: bytes) -> Completed:
+        self.implement.append((argv, cwd, stdin))
+        return self.implement_result
 
 
 def load_ready(root: Path):

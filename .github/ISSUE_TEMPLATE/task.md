@@ -37,3 +37,5 @@ Suggested labels — add one agent and one type; leave `status:todo` until work 
 - status: `status:todo` `status:doing` `status:blocked` `status:done`
 
 Routing: `docs/ROUTING.md`.
+
+The Windows worker does not claim this longer body. For an automatic run, use Bus task, Bus analyze, or Bus implement. Those bodies are only Goal, Task, and Risk. Risk `none` can auto-run when that lane is on. Risk `approval` or `high` waits for a human. `agent:dsh` + `type:implement` is the same worker implement lane as `agent:codex`. `agent:dsh` + `type:analyze` is not automatic.

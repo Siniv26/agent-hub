@@ -71,7 +71,7 @@ def parse_body(body: str) -> TaskBody:
     risk = "\n".join(sections["Risk"]).strip()
     if task not in TASKS:
         raise SchemaError("task")
-    if risk != "none":
+    if risk not in {"none", "approval", "high"}:
         raise SchemaError("risk")
     _check_goal(goal)
     return TaskBody(goal=goal, task=task, risk=risk)

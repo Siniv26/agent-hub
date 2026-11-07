@@ -1,10 +1,11 @@
-"""Subprocess helper. shell is never enabled. Used for gh, not for model CLIs."""
+"""Subprocess helper. shell is never enabled."""
 
 from __future__ import annotations
 
 import os
 import signal
 import subprocess
+import threading
 from dataclasses import dataclass
 
 from worker.constants import CAPTURE_BYTES
@@ -16,6 +17,7 @@ class Completed:
     stdout: bytes
     stderr: bytes
     timed_out: bool
+    killed_by_policy: bool = False
 
 
 def runtime_env() -> dict[str, str]:
@@ -58,6 +60,7 @@ def run_process(
     timeout: float,
     stdin: bytes | None = None,
     max_bytes: int = CAPTURE_BYTES,
+    on_stdout_line=None,
 ) -> Completed:
     if not argv or any(not isinstance(part, str) for part in argv):
         raise ValueError("argv must be a list of strings")
@@ -76,6 +79,18 @@ def run_process(
         shell=False,
         **flags,
     )
+    if on_stdout_line is None:
+        return _communicate(proc, stdin=stdin, timeout=timeout, max_bytes=max_bytes)
+    return _stream(
+        proc,
+        stdin=stdin,
+        timeout=timeout,
+        max_bytes=max_bytes,
+        on_stdout_line=on_stdout_line,
+    )
+
+
+def _communicate(proc, *, stdin, timeout, max_bytes) -> Completed:
     timed_out = False
     try:
         out, err = proc.communicate(stdin, timeout=timeout)
@@ -88,6 +103,78 @@ def run_process(
         stdout=(out or b"")[:max_bytes],
         stderr=(err or b"")[:max_bytes],
         timed_out=timed_out,
+    )
+
+
+def _stream(proc, *, stdin, timeout, max_bytes, on_stdout_line) -> Completed:
+    if stdin is not None and proc.stdin is not None:
+        try:
+            proc.stdin.write(stdin)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+    out_chunks: list[bytes] = []
+    err_box: list[bytes] = []
+    policy = False
+
+    def read_err() -> None:
+        try:
+            err_box.append(proc.stderr.read() if proc.stderr else b"")
+        except OSError:
+            err_box.append(b"")
+
+    def read_out() -> None:
+        nonlocal policy
+        try:
+            while True:
+                line = proc.stdout.readline() if proc.stdout else b""
+                if not line:
+                    break
+                out_chunks.append(line)
+                try:
+                    keep = on_stdout_line(line)
+                except Exception:
+                    keep = False
+                if keep is False:
+                    policy = True
+                    kill_tree(proc)
+                    break
+                if sum(len(part) for part in out_chunks) > max_bytes:
+                    policy = True
+                    kill_tree(proc)
+                    break
+        except OSError:
+            policy = True
+            kill_tree(proc)
+
+    err_thread = threading.Thread(target=read_err, daemon=True)
+    out_thread = threading.Thread(target=read_out, daemon=True)
+    err_thread.start()
+    out_thread.start()
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        kill_tree(proc)
+    out_thread.join(timeout=5)
+    err_thread.join(timeout=5)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+    return Completed(
+        returncode=proc.returncode if proc.returncode is not None else 1,
+        stdout=b"".join(out_chunks)[:max_bytes],
+        stderr=b"".join(err_box)[:max_bytes],
+        timed_out=timed_out,
+        killed_by_policy=policy,
     )
 
 

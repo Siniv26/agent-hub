@@ -8,4 +8,4 @@ $run = Join-Path $WorkerRoot "scripts\run.ps1"
 if (-not (Test-Path -LiteralPath $run)) { throw "missing run.ps1" }
 $tr = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$run`" start"
 schtasks /Create /TN AgentHubWorker /SC ONLOGON /RL LIMITED /IT /F /TR $tr
-Write-Output "Installed AgentHubWorker ONLOGON Interactive Limited. It does not arm the worker and does not start a model."
+Write-Output "Installed AgentHubWorker ONLOGON Interactive Limited. It does not arm the worker. Model lanes stay off unless config turns them on."
