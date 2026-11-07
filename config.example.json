@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "dry_run": true,
+  "repo": "Siniv26/agent-hub",
+  "state_dir": "%LOCALAPPDATA%\\AgentHub\\worker\\state",
+  "log_dir": "%LOCALAPPDATA%\\AgentHub\\worker\\logs",
+  "work_dir": "%LOCALAPPDATA%\\AgentHub\\worker\\work",
+  "poll_seconds": 60,
+  "gh_executable": "gh"
+}

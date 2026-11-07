@@ -4,6 +4,8 @@ One shared task. DSH analyzes a tiny ask, calls `subagent_codex` once, and Partn
 
 Hermes analysis is a different lane and already passed: [Issue #4](https://github.com/Siniv26/agent-hub/issues/4) closed with `HERMES_ANALYSIS_OK`. See [ROUTING.md](ROUTING.md). This checklist stays the DSH → Codex path.
 
+The Windows worker's automatic task is a separate bus smoke (`type:smoke`, `agent:partner`, `bus:ready`). It writes `BUS_SMOKE_OK` and does not call a model. See [OPS.zh.md](OPS.zh.md).
+
 ## Setup / 准备
 
 1. Partner opens an Issue with the Task template.

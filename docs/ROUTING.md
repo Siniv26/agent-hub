@@ -26,24 +26,22 @@ Inside one DSH turn, call `subagent_codex` once when a coding step is required. 
 
 Code changes, debugging, tests, PR-quality engineering. Prefer Codex for implementation (`gpt-6.1-sol`).
 
-Two ways in:
+Two ways in, for a person at the machine:
 
 - DSH calls `subagent_codex` inside one DSH turn
-- native CLI bridge to the current hashed OpenAI Codex binary
+- native CLI at `%LOCALAPPDATA%\OpenAI\Codex\bin\14b838c1d074ff01\codex.exe` (0.167.0-alpha.3.2, not on PATH)
+
+The public worker does not start Codex. `codex exec -s read-only` can still read the home directory and can still load MCP or user config, so it is not treated as an isolation boundary.
 
 ## Hermes / 分析（CLI）
 
-Hermes 0.22.7 oneshot is the DeepSeek analysis worker on Windows:
+Hermes 0.22.7 can run a DeepSeek oneshot on Windows. [Issue #4](https://github.com/Siniv26/agent-hub/issues/4) closed PASS with `HERMES_ANALYSIS_OK` for the binary itself.
 
-```text
-hermes -z "<brief>" --provider deepseek -m deepseek-flash
-```
+The public Issue worker does not send Issue text to Hermes. An empty `-t` means every tool. `memory`, `file`, `terminal`, `browser`, and `delegation` are not allowed. `todo` plus `--safe-mode` still uses the real `HERMES_HOME`, and credentials are not copied into a fresh home, so that lane is deferred.
 
 Binary: `%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\hermes\bin\hermes.exe`
 
-Set `HERMES_HOME` to that `Local\hermes` directory (`...\LocalCache\Local\hermes`). Do not use `~\.hermes`.
-
-Verified smoke: [Issue #4](https://github.com/Siniv26/agent-hub/issues/4) closed PASS with `HERMES_ANALYSIS_OK`.
+`HERMES_HOME` is that `Local\hermes` directory (`...\LocalCache\Local\hermes`), not `~\.hermes`.
 
 ## Who runs / 派工
 
@@ -105,3 +103,9 @@ One `agent:*`, one `type:*`, and one `status:*`.
 - **Notes** — handoff context, whether DSH should call `subagent_codex`
 
 Template: [../.github/ISSUE_TEMPLATE/task.md](../.github/ISSUE_TEMPLATE/task.md)
+
+## Worker / 工人
+
+v1 is default off and lives under `%LOCALAPPDATA%\AgentHub\worker`. It claims one opted-in smoke Issue (`bus:ready`, author `Siniv26`, `type:smoke`, `agent:partner`, risk `none`) and closes it only after `BUS_SMOKE_OK`. Runtime GitHub auth is `gh auth login` on that machine (gh 2.103.3 user scope; device code). The Cursor GitHub connector is not runtime auth.
+
+Hermes, DSH, and Codex are recorded above and are not started. Operations: [OPS.zh.md](OPS.zh.md). Phone template: [../.github/ISSUE_TEMPLATE/bus-task.md](../.github/ISSUE_TEMPLATE/bus-task.md).
