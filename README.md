@@ -12,5 +12,6 @@ GitHub Issues are the task bus. Four agents share this repo; Partner coordinates
 - Routing: [docs/ROUTING.md](docs/ROUTING.md)
 - DSH → Codex smoke: [docs/SMOKE.md](docs/SMOKE.md)
 - New task: [Task issue template](.github/ISSUE_TEMPLATE/task.md)
+- Windows worker (default off, smoke only): [docs/OPS.zh.md](docs/OPS.zh.md)
 
-Phone/remote entry (Telegram gateway, Tailscale tunnel to serve/dashboard) is deferred. No secrets in Issues, comments, or docs.
+The worker claims only an opted-in smoke Issue and writes `BUS_SMOKE_OK`. Hermes, Codex, and DSH are not started. Phone/remote entry (Telegram gateway, Tailscale tunnel to serve/dashboard) is deferred. No secrets in Issues, comments, or docs.
