@@ -197,10 +197,29 @@ def validate_dsh_argv(argv: list[str]) -> None:
 
 
 def windows_cmdline(argv: list[str]) -> list[str]:
-    """Run a .cmd through cmd.exe /d /s /c. The task text is not part of this command."""
+    """Wrap a .cmd or .bat for cmd.exe /d /s /c.
+
+    cmd /s removes one leading and one trailing quote. list2cmdline quotes a
+    path that contains spaces, so those quotes would be the pair removed and
+    the first token would stop at the space (E:\\deepseek). The extra pair is
+    what remains after that strip. The task text is not part of this command.
+    """
     if not argv or not argv[0].lower().endswith((".cmd", ".bat")):
         return list(argv)
-    return ["cmd.exe", "/d", "/s", "/c", subprocess.list2cmdline(argv)]
+    tail = subprocess.list2cmdline(argv)
+    return ["cmd.exe", "/d", "/s", "/c", f'"{tail}"']
+
+
+def windows_launch_command(argv: list[str]) -> str | None:
+    """CreateProcess command line for cmd.exe /d /s /c, otherwise None.
+
+    None means Popen should keep the argv list. Encoding this list with
+    list2cmdline would escape the quotes cmd /s has to see, and a spaced
+    .cmd path would split again.
+    """
+    if len(argv) == 5 and argv[:4] == ["cmd.exe", "/d", "/s", "/c"]:
+        return "cmd.exe /d /s /c " + argv[4]
+    return None
 
 
 def probe_accepts(stdout: bytes, stderr: bytes, *, timed_out: bool) -> bool:
